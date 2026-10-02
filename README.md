@@ -1,7 +1,6 @@
 # CHLEBA
 
-SpartaDOS X command (.COM) for the Atari XL/XE with a SIDE3 cartridge:
-boots ATR disk images.
+SpartaDOS X command (.COM) for the Atari XL/XE with a SIDE3 cartridge.
 
 `CHLEBA.COM` boots an ATR disk image stored on a SIDE3 APT partition
 (SpartaDOS, 512 B sectors), with any OS in ROM. The booted program sees
