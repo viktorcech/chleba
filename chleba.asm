@@ -3,6 +3,9 @@
 ;
 ;   CHLEBA file.ATR   (SpartaDOS X on SIDE3)
 ;
+; NEEDS SpartaDOS X 4.40 or newer ('S' at $0700, the version at $0701,
+; jfsymbol at $07EB); under any other DOS it says so and stops.
+;
 ; Boots an ATR file lying on a SIDE3 APT (SpartaDOS, 512 B sector)
 ; partition, with any OS in ROM, at SD speed:
 ;   1. the file's blocks are found through its SpartaDOS sector maps (read
@@ -118,6 +121,9 @@ ST_OK     equ 1
 device    equ $0761
 scan      equ $0779
 dentry    equ $0789                  ; +1 first sector map, +3 length (3 B)
+CIO_CMD   equ $0342                  ; IOCB 0: command, buffer, length
+CIO_BUF   equ $0344
+CIO_LEN   equ $0348
 
         opt h+
         org PROG
@@ -126,7 +132,30 @@ dentry    equ $0789                  ; +1 first sector map, +3 length (3 B)
 ; start -- the SDX library entries by name (jfsymbol: a plain program has
 ;   no symbol fix-ups), the memory checks, then the command proper
 ;--------------------------------------------------------------
-start   lda #<n_prf
+start   lda $0700                    ; SpartaDOS X 4.40+? ('S', version,
+        cmp #'S'                     ;   jfsymbol's JMP at $07EB)
+        bne st_nos
+        lda $0701
+        cmp #$44
+        bcc st_nos
+        lda $07EB
+        cmp #$4C
+        beq st_sdx
+st_nos  ldx #0                       ; no: say it through CIO (E:, IOCB 0,
+        lda #11                      ;   put characters: the whole text) and stop
+        sta CIO_CMD
+        lda #<m_nos
+        sta CIO_BUF
+        lda #>m_nos
+        sta CIO_BUF+1
+        lda #m_nos_e-m_nos
+        sta CIO_LEN
+        stx CIO_LEN+1
+        jsr CIOV
+st_halt jmp st_halt                  ; and stay: no DOS to return to
+m_nos   dta $9b,c'needs SDX',$9b
+m_nos_e
+st_sdx  lda #<n_prf
         ldx #>n_prf
         jsr jfsymbol
         bne st_p
