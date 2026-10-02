@@ -31,8 +31,6 @@ You can also run `CHLEBA.SYS` from the command line.
 ## Usage
 
 ```
-ATRM ...          mount an ATR as Dn:   (drac030's tools)
-ATRU ...          unmount
 CHLEBA file.ATR   boot an ATR file
 ```
 
