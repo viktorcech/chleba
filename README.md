@@ -1,6 +1,7 @@
 # CHLEBA
 
-ATR loader for SpartaDOS X on the Atari XL/XE with a SIDE3 cartridge.
+SpartaDOS X command (.COM) for the Atari XL/XE with a SIDE3 cartridge:
+boots ATR disk images.
 
 `CHLEBA.COM` boots an ATR disk image stored on a SIDE3 APT partition
 (SpartaDOS, 512 B sectors), with any OS in ROM. The booted program sees
@@ -37,5 +38,5 @@ mads chleba.asm -o:CHLEBA.COM
 
 | File | Description |
 |---|---|
-| `chleba.asm` | source (loader, D1: handler, VSEROR stub, boot step) |
-| `CHLEBA.COM` | built program |
+| `chleba.asm` | source (the command, D1: handler, VSEROR stub, boot step) |
+| `CHLEBA.COM` | built command |
