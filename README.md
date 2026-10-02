@@ -9,7 +9,7 @@ You can also boot an ATR file directly.
 ## Features
 
 - **Mounting ATR images as Dn: (1–15)**: same approach as the IDE Plus 2.0 BIOS.
-  Mount and unmount use the IDE Plus protocol, so drac030's `ATRM.COM` /
+  Mount and unmount use the IDE Plus protocol, so `ATRM.COM` /
   `ATRU.COM` work unchanged.
 - **Fragmented ATR files work**: the driver walks the file's SpartaDOS
   sector maps.

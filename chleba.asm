@@ -3,7 +3,7 @@
 ;
 ; An ATR file lying on any SpartaDOS-formatted drive (e.g. a SIDE3 APT
 ; partition) is served as drive Dn: (n = 1..15), the way the IDE Plus 2.0
-; BIOS does it. Mount/unmount uses the IDE Plus protocol, so drac030's
+; BIOS does it. Mount/unmount uses the IDE Plus protocol, so
 ; ATRM.COM / ATRU.COM work unchanged:
 ;   SIO $20 unit 1 'A' write: mount  (128 B packet, aux1 = drive)
 ;   SIO $20 unit 1 'A' read : unmount, returns flags + file path
