@@ -1,5 +1,5 @@
 ;==============================================================
-; CHLEBA.COM -- Chleba 1.3, taky srandovny loader ATR disketiek (w1k 2026)
+; CHLEBA.COM -- Chleba 1.4, taky srandovny loader ATR disketiek (w1k 2026)
 ;
 ;   CHLEBA file.ATR   (SpartaDOS X on SIDE3)
 ;
@@ -14,8 +14,10 @@
 ;      card RAM $000000;
 ;   2. the D1: handler goes to card RAM bank HND_BANK (run in SIDE3 window
 ;      A, $8000), the VSEROR stub to the CCTL aperture ($D500), the boot
-;      step to $0480; ab_go drops SDX (no cold start, the OS ROM stays in),
-;      puts the OS's vectors back, hooks VSEROR and boots D1:.
+;      step to $BA00; ab_go drops SDX (no cold start, the OS ROM stays in;
+;      the SDX ROM goes whoever hosts it: SIDE3, or an Ultimate 1MB /
+;      Incognito with the SIDE3 behind it), puts the OS's vectors back,
+;      hooks VSEROR and boots D1:.
 ; A plain program (nothing stays resident): it loads at PROG ($8000), out of
 ; the banked $4000-$7FFF window; the three run-elsewhere images (.local
 ; blocks, "org run,load") follow the code, the variables follow them.
@@ -34,11 +36,11 @@ APER_MID  equ $F5
 
 ; the stub in the aperture, the handler in window A
 STUB_IRQ  equ $D500                  ; VSEROR target
-STUB_OLD  equ $D535                  ; operand of JMP: the OS's VSEROR
-STUB_XCH  equ $D537                  ; copy cnt bytes (za),y -> (zb),y, program's map
-STUB_MC1  equ $D50D                  ; 3 operands: VBXE MEMAC_CONTROL address
-STUB_MC2  equ $D549
-STUB_MC3  equ $D559
+STUB_OLD  equ stub.pass+1            ; operand of JMP: the OS's VSEROR
+STUB_XCH  equ stub.xch               ; copy cnt bytes (za),y -> (zb),y, program's map
+STUB_MC1  equ stub.memac1+1          ; 3 operands: VBXE MEMAC_CONTROL address
+STUB_MC2  equ stub.memac2+1
+STUB_MC3  equ stub.memac3+1
 STUB_DATA equ $D578                  ; 8 B data window = card RAM $1FF578
 DATA_LO   equ $78
 DATA_N    equ 8
@@ -48,9 +50,9 @@ H_BRK     equ HND_ORG+4              ; 1 = 256 B sectors 1-3 too ("broken" DD)
 H_TOT     equ HND_ORG+5              ; 2 B: sector count
 H_SCAN    equ HND_ORG+7              ; JMP hscan: the stub's stack scan
 H_816     equ HND_ORG+10             ; $FF: the CPU is a 65816 (copies with MVN)
-BOOT_ORG  equ $0480                  ; bootc.asm
-BOOT_SSZ  equ $0584                  ; its copy of the sector size code
-BOOT_RVEC equ $0585                  ; its rvec: RAM vectors from the OS ROM
+BOOT_ORG  equ $BA00                  ; bootc: the boot step, two pages under the
+                                     ;   E: display list ($BC20): an image's boot
+                                     ;   sectors load low ($0400-$07FF usually)
 
 ; zero page shared by stub and handler (SIO's own, abandoned for D1:)
 zbuf      equ $32                    ; caller buffer
@@ -63,6 +65,7 @@ zr        equ $3E                    ; stub's stack-scan pointer
 ; hardware
 PORTB     equ $D301
 NMIEN     equ $D40E
+NMIST     equ $D40F
 TRIG3     equ $D013
 S3_MODE   equ $D5FC                  ; bits 1-0: register set (0 primary, 1 DMA, 2 emulation)
 S3_APER   equ $D5FD                  ; write bit 6 = CCTL RAM aperture
@@ -89,6 +92,7 @@ DSKINV    equ $E453
 CIOV      equ $E456
 SIOV      equ $E459
 INTINV    equ $E46B
+BLKBDV    equ $E471                  ; the power-up display (DOSVEC's default)
 VSEROR    equ $020C
 
 PROG      equ $8000
@@ -155,35 +159,26 @@ st_nos  ldx #0                       ; no: say it through CIO (E:, IOCB 0,
 st_halt jmp st_halt                  ; and stay: no DOS to return to
 m_nos   dta $9b,c'needs SDX',$9b
 m_nos_e
-st_sdx  lda #<n_prf
-        ldx #>n_prf
+st_sdx  ldy #0                       ; the library entries, PRINTF first,
+st_lk   sty st_y                     ;   into the JMPs below (jfsymbol: AX =
+        lda st_nl,y                  ;   the name; AX = the address, Z = 1
+        ldx st_nh,y                  ;   when missing; Y = memory index)
         jsr jfsymbol
-        bne st_p
-        rts                          ; (no PRINTF: nothing to say it with)
-st_p    sta printf+1
-        stx printf+2
+        beq st_nf
+        ldy st_y
+        pha                          ; (the low byte waits on the stack)
+        txa
+        ldx st_vo,y
+        sta printf+2,x
+        pla
+        sta printf+1,x
+        iny
+        cpy #4
+        bne st_lk
         jsr printf
-        dta $9b,c'Chleba 1.3 - Taky srandovny loader ATR disketiek',$9b
+        dta $9b,c'Chleba 1.4 - Taky srandovny loader ATR disketiek',$9b
         dta c'===============',$9b
         dta c'w1k 2026',$9b,$9b,0
-        lda #<n_gpr
-        ldx #>n_gpr
-        jsr jfsymbol
-        beq st_sym
-        sta u_getpar+1
-        stx u_getpar+2
-        lda #<n_ffi
-        ldx #>n_ffi
-        jsr jfsymbol
-        beq st_sym
-        sta ffirst+1
-        stx ffirst+2
-        lda #<n_fcl
-        ldx #>n_fcl
-        jsr jfsymbol
-        beq st_sym
-        sta fclose+1
-        stx fclose+2
         lda MEMLO+1                  ; the program lies at PROG..bss_end:
         cmp #>PROG                   ;   MEMLO below, MEMTOP above
         bcs st_mem
@@ -193,9 +188,11 @@ st_p    sta printf+1
         sbc #>bss_end
         bcc st_mem
         jmp ab_main
-st_sym  jsr printf
+st_nf   lda st_y                     ; a missing entry: say so, unless it is
+        beq st_rts                   ;   PRINTF itself (looked up first)
+        jsr printf
         dta c'CHLEBA: SDX library not found',$9b,0
-        rts
+st_rts  rts
 st_mem  jsr printf
         dta c'CHLEBA: no room at $8000',$9b,0
         rts
@@ -204,30 +201,31 @@ printf  jmp $FFFF                    ; the library entries, patched by start
 u_getpar jmp $FFFF
 ffirst  jmp $FFFF
 fclose  jmp $FFFF
+st_nl   dta <n_prf,<n_gpr,<n_ffi,<n_fcl
+st_nh   dta >n_prf,>n_gpr,>n_ffi,>n_fcl
+st_vo   dta 0,3,6,9                  ; each one's JMP, from printf
+st_y    dta 0
 n_prf   dta c'PRINTF  '
 n_gpr   dta c'U_GETPAR'
 n_ffi   dta c'FFIRST  '
 n_fcl   dta c'FCLOSE  '
 
 ;--------------------------------------------------------------
-; ab_go -- the last step: leave SDX without a cold start -- OS ROM in, the
-;   OS's own vectors and handlers back, VSEROR to the stub in the SIDE3
-;   aperture -- then boot D1: (bootc at $0480). The handler (window A)
+; ab_go -- the last step: leave SDX without a cold start -- the SDX ROM
+;   off $A000 (Hwctrl hw_ram, the SIDE3 windows, U1MB's $D5E0), OS ROM in,
+;   the OS's own vectors and handlers back, VSEROR to the stub in the SIDE3
+;   aperture -- then boot D1: (bootc at BOOT_ORG). The handler (window A)
 ;   serves every SIOV/DSKINV call for D1:, ROM in or not.
 ;--------------------------------------------------------------
-ab_go   sei
+ab_go   lda $070F                    ; SDX 4.43+ Hwctrl, hw_ram: the library ROM
+        cmp #$4C                     ;   off, RAM at $A000, done by SDX itself
+        bne ab_g0                    ;   for whatever hosts it (no library
+        ldx #1                       ;   call from here on)
+        jsr $070F
+ab_g0   sei
         cld
         lda #0
         sta NMIEN
-        ldx #0                       ; boot step -> $0480
-ab_gb   lda ab_boot,x
-        sta BOOT_ORG,x
-        lda ab_boot+$100,x
-        sta BOOT_ORG+$100,x
-        inx
-        bne ab_gb
-        lda p_new                    ; its copy of the sector size code
-        sta BOOT_SSZ
         lda #$F2                     ; stub's MEMAC_CONTROL: a dummy ($D5F2)
         ldx #$D5                     ;   unless a VBXE is found below
         jsr ab_mc
@@ -269,14 +267,27 @@ ab_vbn  lda S3_MODE                  ; SDX cartridge emulation off
         lda #0
         sta S3_MISC                  ; RAM windows writable, aperture too
         sta S3_WIN                   ; all windows off: SDX gone, TRIG3 = 0
+        lda #$80                     ; SDX hosted by an Ultimate 1MB/Incognito:
+        sta $D5E0                    ;   its SDX ROM off, the external cartridge
+                                     ;   (the SIDE3 windows) passed through
+                                     ;   (%10xxxxxx); a SIDE3 has no register there
         lda #$40
         sta S3_APER                  ; the stub at $D500
+        ldx #0                       ; boot step -> BOOT_ORG, RAM now that the
+ab_gb   lda ab_boot,x                ;   cartridge is gone from $A000-$BFFF
+        sta BOOT_ORG,x
+        lda ab_boot+$100,x
+        sta BOOT_ORG+$100,x
+        inx
+        bne ab_gb
+        lda p_new                    ; its copy of the sector size code
+        sta bootc.H_SSZ_COPY
         lda #$FF                     ; OS ROM, no BASIC, no banks
         sta PORTB
-        ldx #$FF
+        tax
         txs
         jsr INTINV                   ; GINTLK, NMIEN (OS 2.48: no vectors)
-        jsr BOOT_RVEC                ; the RAM vectors from the OS ROM
+        jsr rvec                     ; the RAM vectors from the OS ROM
         ldx #$25                     ; HATABS: P: C: E: S: K: only
 ab_gh   lda ab_hat,x
         sta $031A,x
@@ -286,11 +297,14 @@ ab_gh   lda ab_hat,x
         lda #0
         sta $06                      ; TRAMSZ: no cartridge
         sta $09                      ; BOOT?
-        lda TRIG3
-        sta $03FA                    ; GINTLK
-        lda #$C0
-        sta $02E4                    ; RAMSIZ
-        sta $6A                      ; RAMTOP
+        sta $0247                    ; PDVMSK: no PBI device (U1MB) takes D1:
+        ldx #$C0                     ; RAMTOP $C0; a cartridge still at $A000
+        lda TRIG3                    ;   (an unknown host): E: goes below it
+        sta $03FA                    ; GINTLK = TRIG3 (Z kept: a store)
+        beq ab_rt
+        ldx #$A0
+ab_rt   stx $02E4                    ; RAMSIZ
+        stx $6A                      ; RAMTOP
         lda $0312                    ; OS 2.48: D1: standard speed, no '?' probe
         ora #$0F                     ;   (what it records itself for such a drive)
         sta $0312
@@ -305,7 +319,7 @@ ab_gh   lda ab_hat,x
         lda #$40
         sta NMIEN
         cli
-        jmp $0480
+        jmp BOOT_ORG
 
 ; ab_mc -- AX = MEMAC_CONTROL address into the stub (in the aperture)
 ab_mc   ldy #$40
@@ -322,6 +336,88 @@ ab_mc   ldy #$40
 
 ab_hat  dta c'P',a($E430),c'C',a($E440),c'E',a($E400),c'S',a($E410),c'K',a($E420)
         :23 dta 0
+
+;--------------------------------------------------------------
+; rvec -- called by ab_go (IRQs, NMIs off, PORTB $FF, bootc not yet
+;   running): the RAM vectors $0200-$0227 back to the OS ROM's tables, as
+;   the OS reset does it (INTINV does not; SDX drivers leave VIMIRQ & co.
+;   pointing at their code). The tables are found through the reset code
+;   itself, LDY|LDX #n / LDA tab,Y|X / STA $02dd,Y|X with dd + n inside the
+;   vectors (XL OS: $00/$25; AltirraOS: $00/$17, $22/$05), searched in the
+;   ROM with the self-test window ($5000-$57FF = ROM $D000-$D7FF) on: no
+;   OS addresses.
+;--------------------------------------------------------------
+rv_sp   equ $80                      ; scan pointer
+rv_tp   equ $82                      ; the table found
+rv_dp   equ $84                      ; its destination in page 2
+
+rvec    lda #$7F                     ; OS ROM + self-test window
+        sta PORTB
+        lda #0
+        sta rv_sp
+        lda #$50
+        sta rv_sp+1
+rv_lp   ldy #7
+        lda (rv_sp),y                ; STA $02dd,Y|X
+        cmp #$02
+        bne rv_nx
+        ldy #1
+        lda (rv_sp),y                ; n: the last index (dey/bpl loops)
+        tax
+        ldy #6
+        adc (rv_sp),y                ; dd + n + 1 (C = 1: the cmp above hit):
+        bcs rv_nx                    ;   at most $28, inside $0200-$0227
+        cmp #$29
+        bcs rv_nx
+        ldy #0
+        lda (rv_sp),y
+        and #$FD                     ; LDY # / LDX #
+        cmp #$A0
+        bne rv_nx
+        ldy #2
+        lda (rv_sp),y
+        and #$FB                     ; LDA abs,Y / abs,X
+        cmp #$B9
+        bne rv_nx
+        ldy #5
+        lda (rv_sp),y
+        and #$FB                     ; STA abs,Y / abs,X
+        cmp #$99
+        bne rv_nx
+        ldy #3
+        lda (rv_sp),y
+        sta rv_tp
+        iny
+        lda (rv_sp),y
+        sta rv_tp+1
+        ldy #6
+        lda (rv_sp),y                ; dd
+        sta rv_dp
+        lda #$02
+        sta rv_dp+1
+        txa
+        tay
+rv_cp   lda (rv_tp),y
+        sta (rv_dp),y
+        dey
+        bpl rv_cp
+rv_nx   inc rv_sp
+        bne rv_lp
+        inc rv_sp+1                  ; next page: $5000-$57FF, $C000-$CFFF,
+        lda rv_sp+1                  ;   $D800-$FFFF; Z: past $FFFF
+        beq rv_x
+        cmp #$58
+        bne rv_p1
+        lda #$C0
+        sta rv_sp+1
+rv_p1   cmp #$D0
+        bne rv_lp
+        lda #$D8                     ; (Z = 0: the bne is always taken)
+        sta rv_sp+1
+        bne rv_lp
+rv_x    lda #$FF                     ; self-test window off
+        sta PORTB
+        rts
 
 
 ;==============================================================
@@ -369,7 +465,7 @@ ab_fnd  lda ab_dev                   ; DSK1..DSK15 only
         jsr inval_all
         lda #'N'                     ; host PERCOM: 512 B sectors only
         jsr host_io
-        jmi ab_io
+        bmi x_io
         jsr iob_ptr
         ldy #7
         lda (zptr),y
@@ -381,6 +477,10 @@ ab_fnd  lda ab_dev                   ; DSK1..DSK15 only
 ab_ndsk jsr printf
         dta c'CHLEBA: needs a 512 B sector disk',$9b,0
         rts
+x_io    jmp ab_io                    ; the error exits, in reach of short
+x_map   jmp ab_map                   ;   branches: the way on costs a branch
+x_bad   jmp ab_bad                   ;   not taken
+x_nowb  jmp ab_nowb
 
 ab_hok  lda ab_de+2                  ; nblk = (length + 511) >> 9
         clc
@@ -395,32 +495,38 @@ ab_hok  lda ab_de+2                  ; nblk = (length + 511) >> 9
         txa
         ror
         sta nblk
+        sec                          ; nblkm = nblk - 1: the last block, for
+        sbc #1                       ;   the loop's push test (nblk >= 1)
+        sta nblkm
+        lda nblk+1
+        sbc #0
+        sta nblkm+1
 
         lda #0                       ; block 0: map + header
         sta blk
         sta blk+1
         jsr datasec
-        jcs ab_map
+        bcs x_map
         lda dsec
         sta dsec0
         lda dsec+1
         sta dsec0+1
         jsr load_data
-        jmi ab_io
+        bmi x_io
         jsr ab_hdr
-        jcs ab_bad
+        bcs x_bad
 
 ;--- SD card: addressing, APT, partition start
         jsr inval_data               ; iobuf holds raw blocks from here
         jsr sd_ocr                   ; sdhc
-        jcs ab_nowb
+        bcs x_nowb
         ldx #3
         lda #0
 ab_l0   sta lba,x
         dex
         bpl ab_l0
         jsr rd_iob                   ; LBA 0
-        jcs ab_nowb
+        bcs x_nowb
         jsr is_apt
         beq ab_apt
         inc zptr+1                   ; MBR: a $7F partition holds the APT
@@ -435,22 +541,21 @@ ab_mbr  lda (zptr),y
         tay
         dex
         bne ab_mbr
-        jmp ab_nowb
+ab_mbrx jmp ab_nowb                  ; (also ab_m7r's error exit)
 ab_m7f  tya                          ; start LBA at type+4
         clc
         adc #4
         tay
-        ldx #0
+        ldx #-4
 ab_m7l  lda (zptr),y
-        sta lba,x
+        sta lba+4-256,x
         iny
         inx
-        cpx #4
         bne ab_m7l
 ab_m7r  jsr rd_iob
-        jcs ab_nowb
+        bcs ab_mbrx
         jsr is_apt
-        jne ab_nowb
+        bne ab_mbrx
 
 ab_apt  lda #0                       ; candidates: 512 B DOS partitions
         sta ncand
@@ -498,7 +603,7 @@ ab_cdn  dec cd_n
         bne ab_cd
 
         jsr load_data                ; block 0 again (iobuf held raw data)
-        jmi ab_io
+        bmi x_io2
         lda #0
         sta cd_n
 ab_vf   lda cd_n                     ; a candidate must read back the map
@@ -507,12 +612,11 @@ ab_vf   lda cd_n                     ; a candidate must read back the map
         asl
         asl
         tax
-        ldy #0
+        ldy #-4
 ab_vb   lda cbuf,x
-        sta base,y
+        sta base+4-256,y
         inx
         iny
-        cpy #4
         bne ab_vb
         lda m_smap_lo+BOOTU-1
         ldx m_smap_hi+BOOTU-1
@@ -533,6 +637,8 @@ ab_vnx  inc cd_n
 ab_nowb jsr printf
         dta c'CHLEBA: file not found on the SD card',$9b,0
         rts
+x_io2   jmp ab_io                    ; (in reach of the loop below, and of
+x_map2  jmp ab_map                   ;   the candidate check above)
 
 ;--- SD argument of every file block -> table at $000000
 ab_wbok lda #0
@@ -542,7 +648,7 @@ ab_wbok lda #0
         sta blk
         sta blk+1
 ab_ld   jsr datasec
-        jcs ab_map
+        bcs x_map2
         lda dsec                     ; stage[blk & 31] = SD argument
         ldx dsec+1
         jsr lba_of
@@ -552,27 +658,34 @@ ab_ld   jsr datasec
         asl
         asl
         tax
-        ldy #0
-ab_lda  lda sa0,y
+        ldy #-4
+ab_lda  lda sa0+4-256,y
         sta stage,x
         inx
         iny
-        cpy #4
         bne ab_lda
         lda blk                      ; push the stage only when full (32
-        and #31                      ;   entries) or at the last block
-        cmp #31
+        and #31                      ;   entries) or at the last block: out
+        cmp #31                      ;   of line, the loop stays in reach
         beq ab_psh
         lda blk
-        clc
-        adc #1
-        tax
+        cmp nblkm
+        bne ab_npsh
         lda blk+1
-        adc #0
-        cpx nblk
-        bne ab_npsh
-        cmp nblk+1
-        bne ab_npsh
+        cmp nblkm+1
+        beq ab_psh
+ab_npsh lda blk                      ; a dot per 128 KB (out of line too)
+        beq ab_dot
+ab_ldp  inc blk
+        bne ab_ldq
+        inc blk+1
+ab_ldq  lda blk
+        cmp nblk
+        lda blk+1
+        sbc nblk+1
+        bcc ab_ld
+        jmp ab_up                    ; (once)
+
 ab_psh  lda blk                      ; stage -> (blk & ~31) * 4
         and #$20
         asl
@@ -595,20 +708,13 @@ ab_psh  lda blk                      ; stage -> (blk & ~31) * 4
         sta zsrc+1
         lda #1
         jsr push_n
-ab_npsh lda blk                      ; a dot per 128 KB
-        bne ab_ldp
-        jsr printf
+        jmp ab_npsh
+ab_dot  jsr printf
         dta c'.',0
-ab_ldp  inc blk
-        bne ab_ldq
-        inc blk+1
-ab_ldq  lda blk
-        cmp nblk
-        lda blk+1
-        sbc nblk+1
-        jcc ab_ld
+        jmp ab_ldp
 
 ;--- the handler -> bank HND_BANK, the stub -> the aperture
+ab_up
         php                          ; the CPU into the handler image: $FF on a
         sei                          ;   65816 (its copy uses MVN). No IRQ
         ldx #0                       ;   while D is set.
@@ -661,9 +767,7 @@ ab_sc   lda ab_stub,x
         jsr printf
         dta $9b,c'CHLEBA: booting',$9b,0
         jmp ab_go
-ab_scf  lda #0
-        sta S3_APER
-        jmp pu_bad
+ab_scf  jmp pu_bad                   ; (pu_off turns the aperture off)
 
 ab_io   jsr printf
         dta c'CHLEBA: disk error',$9b,0
@@ -679,15 +783,17 @@ ab_bad  jsr printf
 ; ab_hdr -- ATR header in iobuf -> p_new (ssz, brk, tot).
 ;   C=1: not an ATR, bad sector size, or longer than the file.
 ;--------------------------------------------------------------
+ah_bt   sec                          ; (not an ATR: in reach of the top)
+        rts
 ab_hdr  jsr iob_ptr
         ldy #0
         lda (zptr),y
         cmp #$96
-        jne ah_bad
+        bne ah_bt
         iny
         lda (zptr),y
         cmp #$02
-        jne ah_bad
+        bne ah_bt
         iny                          ; ztmp = paragraphs * 16 = data bytes
         lda (zptr),y
         sta ztmp
@@ -707,7 +813,7 @@ ah_x16  asl ztmp
         dex
         bne ah_x16
         lda ztmp+3
-        jne ah_bad
+        bne ah_bm
         lda ztmp                     ; data + 16 <= file length
         clc
         adc #16
@@ -724,7 +830,7 @@ ah_x16  asl ztmp
         sbc zcnt+1
         lda ab_de+4
         sbc ztmp+3
-        jcc ah_bad
+        bcc ah_bm
 ah_len  lda #0
         sta p_new+1                  ; brk
         ldy #4                       ; sector size -> code, shift
@@ -735,20 +841,22 @@ ah_len  lda #0
         cpx #$80
         bne ah_n128
         cmp #0
-        jne ah_bad
+        bne ah_bm
         ldx #7                       ; 128: tot = bytes >> 7
         bpl ah_set                   ; always (A = 0)
+ah_bm   sec                          ; (not an ATR: in reach of the middle)
+        rts
 ah_n128 cpx #0
-        jne ah_bad
+        bne ah_bm
         cmp #2
         beq ah_512
         cmp #1
-        jne ah_bad
+        bne ah_bm
         ldx ztmp                     ; 256: low byte $80 = normal DD
         cpx #$80
         beq ah_dd
         cpx #0
-        jne ah_bad
+        bne ah_bm
         inc p_new+1                  ; all sectors 256 B
 ah_dd   ldx #8
         bne ah_set                   ; (A = 1)
@@ -863,12 +971,6 @@ pu_lp   lda (zsrc),y
         sta $D500,y
         dey
         bpl pu_lp
-        lda #APER_HI                 ; source: the aperture
-        sta d_sh
-        lda #APER_MID
-        sta d_sm
-        lda #0
-        sta d_sl
         lda S3_MODE                  ; DMA register set
         and #$FC
         ora #1
@@ -878,8 +980,7 @@ pu_set  lda d_sm,x                   ; d_sm.. = $D5F1..$D5FB
         sta $D5F1,x
         dex
         bpl pu_set
-        lda d_sh
-        ora #$A0                     ; memory mode + start
+        lda #APER_HI|$A0             ; source hi, memory mode + start
         sta $D5F0
 pu_wt   lda $D5F0
         bmi pu_wt
@@ -960,7 +1061,7 @@ so_z    sta sa0,x
         jsr sd_cmd
         bcs so_x
         cmp #2                       ; R1 0 or 1 (idle)
-        jcs sd_fail
+        bcs so_f
         jsr spi_ff                   ; OCR bits 31-24: bit 30 = CCS
         and #$40
         sta sdhc
@@ -973,6 +1074,7 @@ so_x    lda #$40
         sta NMIEN
         cli
         rts
+so_f    jmp sd_fail                  ; (in reach: the way on is not taken)
 
 ; rd_iob -- iobuf = SD block lba. C=1: error.
 rd_iob  lda #0
@@ -1066,11 +1168,10 @@ sd_cmd  ldy #$31
         sty S3_CRC
         pla
         jsr ab_wr
-        ldx #0
-sc_arg  lda sa0,x
+        ldx #-4
+sc_arg  lda sa0+4-256,x
         jsr ab_wr
         inx
-        cpx #4
         bne sc_arg
         jsr ab_wt
         lda S3_CRC
@@ -1118,8 +1219,8 @@ se_lp   jsr spi_ff
 apt_sig dta c'APT'
 hndv    dta a(ab_hnd)
 stagev  dta a(stage)
-d_sh    dta 0
-d_sm    dta 0                        ; $D5F1 src mid
+d_sh    dta APER_HI                  ; source: the aperture
+d_sm    dta APER_MID                 ; $D5F1 src mid
 d_sl    dta 0                        ; $D5F2 src lo
 d_dh    dta 0                        ; $D5F3 dst hi
 d_dm    dta 0                        ; $D5F4 dst mid
@@ -1519,9 +1620,9 @@ hnd     cld
         cmp #'P'
         beq c_rw
         cmp #'S'
-        jeq c_stat
+        beq x_stat
         cmp #'N'
-        jeq c_pcm
+        beq x_pcm
         cmp #'O'
         beq ok
 nak     ldy #139
@@ -1543,7 +1644,11 @@ done    sty DSTATS
         sta $42
         sta $0218
         sta $0219
+        lda #$3C                     ; COMMAND line up again (SIO lowered it for
+        sta $D303                    ;   the frame; its REC would raise it)
         rts
+x_stat  jmp c_stat                   ; (the rare commands: in reach of the
+x_pcm   jmp c_pcm                    ;   dispatch, a short branch each)
 
 ;--- 'R' / 'W' / 'P': block by block
 c_rw    jsr xlat
@@ -1600,8 +1705,8 @@ pc_nx   lda rl_l
         jne pc_lp
         jmp ok
 pc_wb   jsr sd_wsnd                  ; write: the block back to the SD card
-        jcs err
         bcc pc_nx
+        jmp err
 pc_fw   lda za                       ; write: caller -> scratch
         sta zb
         lda za+1
@@ -1706,6 +1811,9 @@ adv     tay                          ; (the low byte waits in Y, not RAM)
         inc o2
 adv_x   rts
 
+        .if ((*+7)&$FF)>$CE          ; cp_p (the 50 B page copy at cp16+7) in one page:
+        :$100-(*&$FF) dta 0          ;   its taken branch stays 3 cycles (the pad sits
+        .endif                       ;   after an rts; a plain pad keeps load = run + k)
 ; cp16 -- X:cnt bytes (za) -> (zb)
 cp16    lda p_816
         bne cp_mv
@@ -1723,6 +1831,7 @@ cp_p
         inc zb+1
         dex
         bne cp_p
+        ert (cp_p&$FF00)<>((*-1)&$FF00)   ; the loop and its branch in one page
 cp_r    lda cnt                      ; a multiple of 8 (always: sector pieces
         beq cp_x                     ;   start 16 B into a block): unrolled
         and #7
@@ -1748,16 +1857,15 @@ cp_x    rts
 ;   cartridge window, so on an accelerator every code byte it fetches is a
 ;   bus cycle: MVN fetches 3 a byte moved, the 6502 loop 5. Native mode only
 ;   for the move (IRQs and NMIs are off here), 8-bit emulation again after.
-cp_mv   lda cnt
-        sta cp_n
-        stx cp_n+1
-        opt c+
+cp_mv   opt c+
+        txa                          ; C = pages:cnt, built in A (B = X by
+        xba                          ;   xba; no cell: this code runs from the
+        lda cnt                      ;   cartridge window, a cell is the bus)
         clc
         xce
         rep #$30
         .LONGA ON
         .LONGI ON
-        lda cp_n
         dec @                        ; MVN moves C+1 bytes
         ldx za
         ldy zb
@@ -1769,7 +1877,6 @@ cp_mv   lda cnt
         xce
         opt c-
         rts
-cp_n    dta a(0)
 
 ; fast -- C=0 when the caller's buffer zbuf..zbuf+n-1 is outside the two
 ;   windows ($8000-$BFFF) and outside the program's MEMAC A CPU window
@@ -1828,11 +1935,15 @@ fh_no   clc
 fs_sz   dta $10,$20,$40,$80          ; MEMAC A window size in pages
 
 ;--- 'S': 4 status bytes; 'N': PERCOM, one track of tot sectors
-c_stat  lda p_ssz
-        cmp #1                       ; C = double density
-        lda #$10                     ; motor on
+c_stat  lda #$30                     ; motor on, double density
+        ldx p_ssz
+        cpx #1                       ; C = double density
+        bcs st_sd
+        lda #$10                     ; motor on; over 720 sectors of 128 B:
+        ldx p_tot+1                  ;   a 1050's enhanced density (bit 7)
+        cpx #3
         bcc st_sd
-        lda #$30
+        lda #$90
 st_sd   sta rbuf+12
         ldx #12
         lda #4
@@ -1935,17 +2046,27 @@ xl_dd   lda o0                       ; o = 16 + $80 + (v - 2) << 8
         sta o2
         stx o1
         lda #16+$80
-        bne xl_r256                  ; (always)
+        sta o0
+        bne xl_rl                    ; (always: 256 B)
 xl_256  lda o1                       ; o = 16 + v << 8
         sta o2
         lda o0
         sta o1
         lda #16
-xl_r256 sta o0
+        sta o0
+        lda DAUX2                    ; a "broken" DD image: sectors 1-3 are 256 B
+        bne xl_rl                    ;   slots holding 128 B (as Altirra reads them)
+        ldx DAUX1
+        cpx #4
+        bcs xl_rl
+        ldx #$80                     ; 128 B
+        stx rl_l
         lda #0
+        beq xl_rh                    ; (always)
+xl_rl   lda #0                       ; 256 B
         sta rl_l
         lda #1
-        sta rl_h
+xl_rh   sta rl_h
         clc
         rts
 xl_512  lda o0                       ; o = 16 + v << 9
@@ -2135,11 +2256,10 @@ sd_cmd  ldy #$31                     ; select, fast clock, power
         sty S3_CRC
         pla
         jsr spi_wr
-        ldx #0
-sc_arg  lda sa0,x
+        ldx #-4
+sc_arg  lda sa0+4-256,x
         jsr spi_wr
         inx
-        cpx #4
         bne sc_arg
         jsr spi_wt
         lda S3_CRC
@@ -2343,13 +2463,17 @@ memac1  lda $D5F2                    ; MEMAC_CONTROL (ab_go: $D65E/$D75E or a du
         txs                          ; the SIO frames above are dropped now
         jsr HND_ORG                  ; Y = status
         jsr hoff
-        lda #$40
+        lda NMIST                    ; NMIs on again: a DLI seen since the last
+        and #$80                     ;   VBI (NMIST bit 7: the OS resets it there)
+        ora #$40                     ;   means the program has them enabled
         sta NMIEN
         cli
         tya
         rts
 none    jsr hoff                     ; no caller found: the OS's SIO goes on
-        lda #$40
+        lda NMIST
+        and #$80
+        ora #$40
         sta NMIEN
 pass    jmp $FFFF                    ; the OS's VSEROR (set by ab_go)
 
@@ -2379,11 +2503,6 @@ memac3  sta $D5F2
 
 stub_end
         ert stub_end>STUB_DATA
-        ert pass+1<>STUB_OLD
-        ert xch<>STUB_XCH
-        ert memac1+1<>STUB_MC1
-        ert memac2+1<>STUB_MC2
-        ert memac3+1<>STUB_MC3
 img_end
         .endl
 ab_stub_e equ ab_stub+stub.img_end-STUB_IRQ
@@ -2392,7 +2511,7 @@ ab_boot equ ab_stub_e                ; boot step ($0480), stored after the stub
         .local bootc
         org BOOT_ORG,ab_boot
 ;--------------------------------------------------------------
-; ATRBOOT boot step, copied to $0480 by ab_go (SDX is gone by then, the
+; ATRBOOT boot step, copied to $BA00 by ab_go (SDX is gone by then, the
 ; OS ROM is in and VSEROR points at the stub): reopen E:, load the boot
 ; sectors of D1: through DSKINV (served by the stub/handler) and run them
 ; the way the OS boot does (BOOTAD+6, DOSINI, DOSVEC).
@@ -2406,8 +2525,39 @@ DFLAGS  equ $0240
 DBSECT  equ $0241
 BOOTAD  equ $0242
 
-        ldx #0                       ; E: at the full RAMTOP
-        lda #12
+        ldx #$80                     ; RAM as the OS's cold start leaves it:
+        lda #0                       ;   zero page $80-$FF, page 1 (nothing
+bt_z0   sta $00,x                    ;   lives on the stack yet) and $0400-$B9FF;
+        inx                          ;   the OS variables and this code stay.
+        bne bt_z0                    ;   E: is opened after.
+bt_z1   sta $0100,x
+        inx
+        bne bt_z1
+        stx $80                      ; (X = 0)
+        ldx #$04
+        stx $81
+        tay                          ; (A = 0)
+bt_z2   sta ($80),y
+        iny
+        bne bt_z2
+        inx                          ; the page, kept in X
+        stx $81
+        cpx #>BOOT_ORG
+        bcc bt_z2
+        sty $81                      ; (Y = 0: the pointer's cells too)
+
+        ldx #0                       ; the OS's cold start state for the boot:
+        stx $08                      ;   WARMST 0, COLDST on until DOSINI has
+        stx MEMLO                    ;   run (a DOSINI tells a RESET by it),
+        lda #$FF                     ;   MEMLO $0700, DOSVEC the power-up display
+        sta $0244
+        lda #7
+        sta MEMLO+1
+        lda #<BLKBDV
+        sta $0A
+        lda #>BLKBDV
+        sta $0B
+        lda #12                      ; E: at the full RAMTOP (X = 0: IOCB 0)
         sta ICCOM
         jsr CIOV
         ldx #0
@@ -2461,6 +2611,14 @@ bt_lp   jsr rdsec
         inc DAUX1
         dec bt_n
         bne bt_lp
+        lda DBUFA                    ; the DCB as the OS boot leaves it: RAMLO
+        sta $04                      ;   past the boot sectors, DBUFA back at
+        lda DBUFA+1                  ;   CASBUF+3 (loaders rely on the low 0)
+        sta $05
+        lda #0
+        sta DBUFA
+        lda #4
+        sta DBUFA+1
         lda BOOTAD                   ; JSR BOOTAD+6; C=1: boot failed
         clc
         adc #6
@@ -2470,11 +2628,10 @@ bt_lp   jsr rdsec
         sta bt_vec+1
         jsr bt_go
         bcs bt_err
-        lda #1
-        sta $09                      ; BOOT?: disk booted
-        jsr bt_dini
+        jsr bt_dini                  ; DOSINI, then BOOT? and COLDST as the OS does
+        inc $09                      ; BOOT?: disk booted (0 since ab_go)
         lda #0
-        sta $0244                    ; COLDST
+        sta $0244                    ; COLDST: the cold start is complete
         jmp ($000A)                  ; DOSVEC
 
 bt_go   jmp (bt_vec)
@@ -2510,94 +2667,9 @@ bt_n    dta 0
 bt_vec  dta a(0)
         ert <bt_vec=$FF
 H_SSZ_COPY dta 0                     ; set by ab_go: sector size code
-        ert H_SSZ_COPY<>BOOT_SSZ
 
-;--------------------------------------------------------------
-; rvec -- called by ab_go (IRQs, NMIs off, PORTB $FF): the RAM vectors
-;   $0200-$0225 and $024F-$026A back to the OS ROM's tables, as the OS reset
-;   does it (INTINV does not; SDX drivers leave VIMIRQ & co. pointing at
-;   their code). The tables are found through the reset code itself,
-;   LDY|LDX #n / LDA tab,Y|X / STA $02dd,Y|X, searched in the ROM with the
-;   self-test window ($5000-$57FF = ROM $D000-$D7FF) on: no OS addresses.
-;--------------------------------------------------------------
-rv_sp   equ $80                      ; scan pointer
-rv_tp   equ $82                      ; the table found
-rv_dp   equ $84                      ; its destination in page 2
-
-        ert *<>BOOT_RVEC
-rvec    lda #$7F                     ; OS ROM + self-test window
-        sta PORTB
-        lda #0
-        sta rv_sp
-        lda #$50
-        sta rv_sp+1
-rv_lp   ldy #7
-        lda (rv_sp),y                ; STA $02dd,Y|X
-        cmp #$02
-        bne rv_nx
-        ldy #1
-        lda (rv_sp),y                ; LDY|LDX #n
-        ldx #0                       ; X = 0: $0200 ($26 B), 1: $024F ($1C B)
-        cmp #$25
-        beq rv_c
-        inx
-        cmp #$1B
-        bne rv_nx
-rv_c    ldy #6
-        lda (rv_sp),y
-        cmp rv_dst,x
-        bne rv_nx
-        ldy #0
-        lda (rv_sp),y
-        and #$FD                     ; LDY # / LDX #
-        cmp #$A0
-        bne rv_nx
-        ldy #2
-        lda (rv_sp),y
-        and #$FB                     ; LDA abs,Y / abs,X
-        cmp #$B9
-        bne rv_nx
-        ldy #5
-        lda (rv_sp),y
-        and #$FB                     ; STA abs,Y / abs,X
-        cmp #$99
-        bne rv_nx
-        ldy #3
-        lda (rv_sp),y
-        sta rv_tp
-        iny
-        lda (rv_sp),y
-        sta rv_tp+1
-        lda rv_dst,x
-        sta rv_dp
-        lda #$02
-        sta rv_dp+1
-        ldy rv_cnt,x
-rv_cp   lda (rv_tp),y
-        sta (rv_dp),y
-        dey
-        bpl rv_cp
-rv_nx   inc rv_sp
-        bne rv_lp
-        inc rv_sp+1                  ; next page: $5000-$57FF, $C000-$CFFF,
-        lda rv_sp+1                  ;   $D800-$FFFF; Z: past $FFFF
-        beq rv_x
-        cmp #$58
-        bne rv_p1
-        lda #$C0
-        sta rv_sp+1
-rv_p1   cmp #$D0
-        bne rv_lp
-        lda #$D8                     ; (Z = 0: the bne is always taken)
-        sta rv_sp+1
-        bne rv_lp
-rv_x    lda #$FF                     ; self-test window off
-        sta PORTB
-        rts
-rv_dst  dta $00,$4F
-rv_cnt  dta $25,$1B
 bootc_end
-        ert bootc_end>BOOT_ORG+$200        ; ab_go copies two pages
+        ert bootc_end>BOOT_ORG+$200        ; (ab_go copies two pages, under the E: list)
 img_end
         .endl
 ab_boot_e equ ab_boot+bootc.img_end-BOOT_ORG
@@ -2635,7 +2707,8 @@ ncand   equ rd_bad+1
 cd_n    equ ncand+1
 p_new   equ cd_n+1                   ; 5 = R_SSZ..R_FLAGS
 ab_sp   equ p_new+5                  ; stack pointer at entry
-cbuf    equ ab_sp+1                  ; 31 x 4
+nblkm   equ ab_sp+1                  ; 2: the last block (nblk - 1)
+cbuf    equ nblkm+2                  ; 31 x 4
 stage   equ cbuf+124                 ; 128
 mapbuf  equ stage+128                ; 512
 iobuf   equ mapbuf+512               ; 512 B host sector buffer
