@@ -105,7 +105,6 @@ jfsymbol  equ $07EB
 MEMTOP    equ $02E5
 MEMLO     equ $02E7
 
-dcmnd     equ $0302
 dtimlo    equ $0306
 dunuse    equ $0307
 
@@ -542,9 +541,8 @@ ab_mbr  lda (zptr),y
         dex
         bne ab_mbr
 ab_mbrx jmp ab_nowb                  ; (also ab_m7r's error exit)
-ab_m7f  tya                          ; start LBA at type+4
-        clc
-        adc #4
+ab_m7f  tya                          ; start LBA at type+4 (C = 1: the
+        adc #3                       ;   cmp #$7F hit)
         tay
         ldx #-4
 ab_m7l  lda (zptr),y
@@ -621,15 +619,15 @@ ab_vb   lda cbuf,x
         lda m_smap_lo+BOOTU-1
         ldx m_smap_hi+BOOTU-1
         jsr lba_of
-        lda mapbv
-        ldx mapbv+1
+        lda #<mapbuf
+        ldx #>mapbuf
         jsr cmp_sec
         bne ab_vnx
         lda dsec0
         ldx dsec0+1
         jsr lba_of
-        lda iobv
-        ldx iobv+1
+        lda #<iobuf
+        ldx #>iobuf
         jsr cmp_sec
         beq ab_wbok
 ab_vnx  inc cd_n
@@ -641,10 +639,9 @@ x_io2   jmp ab_io                    ; (in reach of the loop below, and of
 x_map2  jmp ab_map                   ;   the candidate check above)
 
 ;--- SD argument of every file block -> table at $000000
-ab_wbok lda #0
-        sta p_new+4
-        jsr inval_data
+ab_wbok jsr inval_data
         lda #0
+        sta p_new+4
         sta blk
         sta blk+1
 ab_ld   jsr datasec
@@ -664,10 +661,9 @@ ab_lda  lda sa0+4-256,y
         inx
         iny
         bne ab_lda
-        lda blk                      ; push the stage only when full (32
-        and #31                      ;   entries) or at the last block: out
-        cmp #31                      ;   of line, the loop stays in reach
-        beq ab_psh
+        cpx #32*4                    ; push the stage only when full (X = 4 *
+        beq ab_psh                   ;   (blk & 31) + 4) or at the last block:
+                                     ;   out of line, the loop stays in reach
         lda blk
         cmp nblkm
         bne ab_npsh
@@ -702,9 +698,9 @@ ab_psh  lda blk                      ; stage -> (blk & ~31) * 4
         asl
         rol d_dm
         rol d_dh
-        lda stagev
+        lda #<stage
         sta zsrc
-        lda stagev+1
+        lda #>stage
         sta zsrc+1
         lda #1
         jsr push_n
@@ -735,9 +731,9 @@ ab_pp   lda p_new,x
         sta ab_hnd+H_SSZ-HND_ORG,x
         dex
         bpl ab_pp
-        lda hndv
+        lda #<ab_hnd
         sta zsrc
-        lda hndv+1
+        lda #>ab_hnd
         sta zsrc+1
         lda #HND_HI
         sta d_dh
@@ -868,34 +864,31 @@ ah_sh   lsr ztmp+2
         dex
         bne ah_sh
         lda ztmp+2
-        jne ah_bad
+        jne ah_bm
         lda p_new                    ; normal DD: (bytes >> 8) + 2
         cmp #1
         bne ah_tot
         lda p_new+1
         bne ah_tot
-        lda ztmp
-        clc
-        adc #2
+        lda ztmp                     ; (C = 1: the cmp #1 hit)
+        adc #1
         sta ztmp
         bcc ah_tot
         inc ztmp+1
-        jeq ah_bad
+        jeq ah_bm
 ah_tot  lda ztmp
         sta p_new+2
         ora ztmp+1
-        jeq ah_bad
+        jeq ah_bm
         lda ztmp+1
         sta p_new+3
         clc
         rts
-ah_bad  sec
-        rts
 
 ; iob_ptr -- zptr = iobuf
-iob_ptr lda iobv
+iob_ptr lda #<iobuf
         sta zptr
-        lda iobv+1
+        lda #>iobuf
         sta zptr+1
         rts
 
@@ -1053,7 +1046,6 @@ sd_ocr  sei                          ; no VBI (SIDE3CLK) during SPI
         lda #0
         sta NMIEN
         ldx #3
-        lda #0
 so_z    sta sa0,x
         dex
         bpl so_z
@@ -1079,8 +1071,8 @@ so_f    jmp sd_fail                  ; (in reach: the way on is not taken)
 ; rd_iob -- iobuf = SD block lba. C=1: error.
 rd_iob  lda #0
         sta rd_cmp
-        lda iobv
-        ldx iobv+1
+        lda #<iobuf
+        ldx #>iobuf
         bne sd_rd                    ; always (iobuf is not in page 0)
 
 ; cmp_sec -- compare SD block lba with the 512 B at AX. Z=1: equal.
@@ -1182,10 +1174,8 @@ sc_r1   jsr spi_ff
         bne sc_ok
         dex
         bne sc_r1
-        sec
-        rts
-sc_ok   tay
-        clc
+        rts                          ; C = 1: no R1 (the cmp hit)
+sc_ok   tay                          ; C = 0: R1 < $FF
         rts
 
 ; SPI byte I/O: each access to $D5F4 waits until the shifter is idle
@@ -1217,8 +1207,6 @@ se_lp   jsr spi_ff
         rts
 
 apt_sig dta c'APT'
-hndv    dta a(ab_hnd)
-stagev  dta a(stage)
 d_sh    dta APER_HI                  ; source: the aperture
 d_sm    dta APER_MID                 ; $D5F1 src mid
 d_sl    dta 0                        ; $D5F2 src lo
@@ -1239,15 +1227,13 @@ d_dl    dta 0                        ; $D5F5 dst lo
 ;   maps, remembering the last map reached). C=1: hole / past the file.
 ;--------------------------------------------------------------
 datasec ldx unit
-        lda m_hss-1,x                ; entries per map sector
-        tay
+        ldy m_hss-1,x                ; entries per map sector
         lda epm_t,y
         sta ztmp+2
         cmp ds_epm                   ; same divisor as last time and blk the
         bne ds_full                  ;   same or the next one (sequential I/O):
         lda blk                      ;   kq, e follow without the division
-        sec
-        sbc ds_lb
+        sbc ds_lb                    ;   (C = 1: the cmp hit)
         tay
         lda blk+1
         sbc ds_lb+1
@@ -1265,10 +1251,6 @@ datasec ldx unit
         bne ds_e
         inc ds_kq+1
 ds_e    sty ds_ent
-        lda blk
-        sta ds_lb
-        lda blk+1
-        sta ds_lb+1
 ds_same lda ds_ent
         sta ent
         lda ds_kq
@@ -1302,11 +1284,10 @@ ds_nos  dey
         sta ds_kq+1
         lda ztmp+2
         sta ds_epm
-        lda blk
+ds_have lda blk                      ; the blk that kq, e belong to
         sta ds_lb
         lda blk+1
         sta ds_lb+1
-ds_have
 
         lda mc_unit                  ; resume from the cached map?
         cmp unit
@@ -1317,8 +1298,7 @@ ds_have
         sbc mc_k+1
         bcs ds_walk
 ds_first
-        lda unit
-        sta mc_unit
+        stx mc_unit                  ; (X = unit)
         lda #0
         sta mc_k
         sta mc_k+1
@@ -1335,11 +1315,10 @@ ds_walk jsr load_map                 ; mapbuf = map sector mc_s
         lda mc_k+1
         cmp kq+1
         beq ds_here
-ds_next lda mapbuf                   ; follow the "next" link
+ds_next lda mapbuf                   ; follow the "next" link (a failure
+        sta mc_s                     ;   drops mc_unit: mc_s is set again)
         ora mapbuf+1
         beq ds_fail
-        lda mapbuf
-        sta mc_s
         lda mapbuf+1
         sta mc_s+1
         inc mc_k
@@ -1347,20 +1326,14 @@ ds_next lda mapbuf                   ; follow the "next" link
         inc mc_k+1
         bne ds_walk
 
-ds_here lda ent                      ; dsec = mapbuf[4 + 2e]
-        asl
-        sta ztmp
-        lda #0
-        rol
-        sta ztmp+1
-        lda mapbv
-        clc
-        adc ztmp
+ds_here lda #<(mapbuf+4)             ; dsec = mapbuf[4 + 2e]
         sta zptr
-        lda mapbv+1
-        adc ztmp+1
+        lda ent
+        asl
+        tay                          ; (even: the iny below never wraps)
+        lda #>(mapbuf+4)
+        adc #0
         sta zptr+1
-        ldy #4
         lda (zptr),y
         sta dsec
         iny
@@ -1402,26 +1375,14 @@ lm_rd   lda m_host-1,x
         lda #'R'
         jsr host_io
         bmi lm_err
-        lda iobv                     ; iobuf -> mapbuf (both visible here)
-        sta zsrc
-        lda iobv+1
-        sta zsrc+1
-        lda mapbv
-        sta zdst
-        lda mapbv+1
-        sta zdst+1
-        ldy #0
-        ldx #2
-lm_cp   lda (zsrc),y
-        sta (zdst),y
-        iny
+        ldx #0                       ; iobuf -> mapbuf (both visible here)
+lm_cp   lda iobuf,x
+        sta mapbuf,x
+        lda iobuf+$100,x
+        sta mapbuf+$100,x
+        inx
         bne lm_cp
-        inc zsrc+1
-        inc zdst+1
-        dex
-        bne lm_cp
-        ldx unit
-        lda m_host-1,x
+        lda hunit
         sta mb_host
         lda mc_s
         sta mb_sec
@@ -1480,14 +1441,14 @@ inval_data
 ;   ('N': 12 B PERCOM into iobuf). Calls the drivers behind ours in the
 ;   sio_vector chain directly (no re-entry into LSIO). N=1: error.
 ;--------------------------------------------------------------
-host_io sta dcmnd
+host_io sta DCOMND
         lda #$31
         sta ddevic
         lda hunit
         sta dunit
-        lda iobv
+        lda #<iobuf
         sta dbufa
-        lda iobv+1
+        lda #>iobuf
         sta dbufa+1
         lda #7
         sta dtimlo
@@ -1499,14 +1460,13 @@ host_io sta dcmnd
         lda hsec+1
         sta daux2
         ldx unit
-        lda m_hss-1,x
-        tay
+        ldy m_hss-1,x
         lda ss_hi,y
         sta dbyt+1
         lda ss_lo,y
         sta dbyt
         lda #$40
-        ldy dcmnd
+        ldy DCOMND
         cpy #'W'
         bne hio_dir
         lda #$80
@@ -1552,8 +1512,6 @@ inval_all
 ss_lo   dta $80,$00,$00              ; sector size by code 0/1/2
 ss_hi   dta $00,$01,$02
 epm_t   dta 62,126,254               ; map entries per host sector
-mapbv   dta a(mapbuf)
-iobv    dta a(iobuf)
 
 ; variables (initialised: the "not cached" markers must start $FF)
 mc_unit dta $FF
@@ -1921,17 +1879,12 @@ fs_ok   clc
 fs_x    rts
 ; fs_hit -- C=1 when pages [zbuf+1 .. t_m] meet [A, X)
 fs_hit  sta t_h
-        stx t_n
-        lda t_m                      ; end < lo: no
+        lda t_m                      ; end < lo: no (C = 0)
         cmp t_h
-        bcc fh_no
-        lda zbuf+1                   ; start >= hi: no
-        cmp t_n
-        bcs fh_no
-        sec
-        rts
-fh_no   clc
-        rts
+        bcc fh_x
+        dex                          ; start <= hi - 1: yes (X >= $10)
+        cpx zbuf+1
+fh_x    rts
 fs_sz   dta $10,$20,$40,$80          ; MEMAC A window size in pages
 
 ;--- 'S': 4 status bytes; 'N': PERCOM, one track of tot sectors
@@ -2027,8 +1980,7 @@ xl_128  lda o1                       ; o = 16 + v << 7: v >> 1 in the upper
         sta rl_l
         lda #0
         sta rl_h
-        clc
-        rts
+        rts                          ; (C = 0: the ror of #0)
 xl_n128 dex
         bne xl_512
         lda p_brk                    ; 256 B: sectors 1-3 are 128 B unless
@@ -2273,13 +2225,10 @@ sc_x    rts
 sd_resp ldx #0
 sr_lp   jsr spi_ff
         cmp #$FF
-        bne sr_ok
+        bne sr_ok                    ; C = 0: below $FF
         dex
-        bne sr_lp
-        sec
-        rts
-sr_ok   clc
-        rts
+        bne sr_lp                    ; C = 1 (the cmp hit): timeout
+sr_ok   rts
 
 ;--------------------------------------------------------------
 ; hscan -- the frame the stub returns through: X = S for its TXS, C=0;
@@ -2416,7 +2365,6 @@ n_h     dta 0
 t_l     dta 0
 t_m     dta 0
 t_h     dta 0
-t_n     dta 0
 rbuf    dta 1,0,0,0,0,0,0,0,$FF,0,0,0  ; PERCOM
         dta 0,$FF,$E0,0              ; status
 
@@ -2459,22 +2407,19 @@ memac1  lda $D5F2                    ; MEMAC_CONTROL (ab_go: $D65E/$D75E or a du
         sta zwin
         jsr hon
         jsr H_SCAN                   ; X = the SIOV caller's frame
-        bcs none
+        bcs none                     ; (C = 1: none, kept to the bcs pass)
         txs                          ; the SIO frames above are dropped now
         jsr HND_ORG                  ; Y = status
-        jsr hoff
+        clc
+none    jsr hoff
         lda NMIST                    ; NMIs on again: a DLI seen since the last
         and #$80                     ;   VBI (NMIST bit 7: the OS resets it there)
         ora #$40                     ;   means the program has them enabled
         sta NMIEN
+        bcs pass                     ; no caller found: the OS's SIO goes on
         cli
         tya
         rts
-none    jsr hoff                     ; no caller found: the OS's SIO goes on
-        lda NMIST
-        and #$80
-        ora #$40
-        sta NMIEN
 pass    jmp $FFFF                    ; the OS's VSEROR (set by ab_go)
 
 ; xch -- cnt bytes (za),y -> (zb),y in the program's memory map
@@ -2569,8 +2514,7 @@ bt_z2   sta ($80),y
         sta ICBAL+1
         lda #12
         sta ICAX1
-        lda #0
-        sta ICAX1+1
+        stx ICAX1+1                  ; (X = 0)
         jsr CIOV
 
         lda #0                       ; sector 1 -> $0400: boot header
@@ -2678,40 +2622,41 @@ ab_boot_e equ ab_boot+bootc.img_end-BOOT_ORG
 ; variables, buffers (not in the file: they follow the images)
 ;==============================================================
 bss_beg equ ab_boot_e
-unit    equ bss_beg
-blk     equ unit+1                   ; 2
-kq      equ blk+2                    ; 2
-ent     equ kq+2                     ; 1
-dsec    equ ent+1                    ; 2
-mc_k    equ dsec+2                   ; 2
-mc_s    equ mc_k+2                   ; 2
-mb_sec  equ mc_s+2                   ; 2
-dc_sec  equ mb_sec+2                 ; 2
-hunit   equ dc_sec+2                 ; 1
-hsec    equ hunit+1                  ; 2
-m_host  equ hsec+2                   ; NSLOT each
-m_hss   equ m_host+NSLOT
-m_smap_lo equ m_hss+NSLOT
-m_smap_hi equ m_smap_lo+NSLOT
-ab_de   equ m_smap_hi+NSLOT          ; 5: first map, length
-ab_dev  equ ab_de+5
-nblk    equ ab_dev+1                 ; 2
-dsec0   equ nblk+2                   ; 2
-sdhc    equ dsec0+2
-lba     equ sdhc+1                   ; 4, little-endian
-base    equ lba+4                    ; 4, little-endian
-sa0     equ base+4                   ; 4: SD argument, big-endian
-rd_cmp  equ sa0+4
-rd_bad  equ rd_cmp+1
-ncand   equ rd_bad+1
-cd_n    equ ncand+1
-p_new   equ cd_n+1                   ; 5 = R_SSZ..R_FLAGS
-ab_sp   equ p_new+5                  ; stack pointer at entry
-nblkm   equ ab_sp+1                  ; 2: the last block (nblk - 1)
-cbuf    equ nblkm+2                  ; 31 x 4
-stage   equ cbuf+124                 ; 128
-mapbuf  equ stage+128                ; 512
-iobuf   equ mapbuf+512               ; 512 B host sector buffer
-bss_end equ iobuf+512
+        org bss_beg
+unit    .ds 1
+blk     .ds 2
+kq      .ds 2
+ent     .ds 1
+dsec    .ds 2
+mc_k    .ds 2
+mc_s    .ds 2
+mb_sec  .ds 2
+dc_sec  .ds 2
+hunit   .ds 1
+hsec    .ds 2
+m_host  .ds NSLOT
+m_hss   .ds NSLOT
+m_smap_lo .ds NSLOT
+m_smap_hi .ds NSLOT
+ab_de   .ds 5                        ; first map, length
+ab_dev  .ds 1
+nblk    .ds 2
+dsec0   .ds 2
+sdhc    .ds 1
+lba     .ds 4                        ; little-endian
+base    .ds 4                        ; little-endian
+sa0     .ds 4                        ; SD argument, big-endian
+rd_cmp  .ds 1
+rd_bad  .ds 1
+ncand   .ds 1
+cd_n    .ds 1
+p_new   .ds 5                        ; R_SSZ..R_FLAGS
+ab_sp   .ds 1                        ; stack pointer at entry
+nblkm   .ds 2                        ; the last block (nblk - 1)
+cbuf    .ds 31*4
+stage   .ds 128
+mapbuf  .ds 512
+iobuf   .ds 512                      ; host sector buffer
+bss_end
 
         run start
